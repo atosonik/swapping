@@ -1,10 +1,17 @@
 """Split large files into small parts, and put them back together byte-exact.
 
-    python chunker.py split                       # models/ -> parts/
-    python chunker.py split --all                 # include unused pack files
-    python chunker.py split --src dist/FaceSwap.exe --parts exe_parts
-    python chunker.py verify --parts exe_parts
-    python chunker.py merge  --parts exe_parts    # restores dist/FaceSwap.exe
+Two part sets live in this project:
+
+    parts/          the four model files the app loads   (models/)
+    runableparts/   the built desktop app                (dist/FaceSwap.exe)
+
+    python chunker.py split                            # models/ -> parts/
+    python chunker.py split --all                      # include unused pack files
+    python chunker.py merge                            # parts/ -> models/
+
+    python chunker.py split --src dist/FaceSwap.exe --parts runableparts
+    python chunker.py verify --parts runableparts      # checksums only, no writes
+    python chunker.py merge  --parts runableparts      # restores dist/FaceSwap.exe
 
 Parts are capped at 1,000,000 bytes by default -- under "1 MB" whether that is
 read as 10^6 or 2^20, so the output is safe either way.
@@ -84,6 +91,8 @@ def resolve_sources(src: str, all_files: bool) -> tuple[str, list[str]]:
     if not os.path.isdir(src):
         raise ChunkError(f"No such file or directory: {src}")
 
+    # normcase because Windows paths differ only by case and separator style;
+    # a plain == would miss "d:/.../models" vs "D:\...\models".
     is_models = os.path.normcase(src) == os.path.normcase(os.path.abspath(MODELS))
     if is_models and not all_files:
         return src, [r for r in REQUIRED if os.path.exists(os.path.join(src, r))]
@@ -118,7 +127,9 @@ def split_file(root: str, rel: str, parts_root: str, part_dir: str,
             part_hash = hashlib.sha256()
             written = 0
             with open(os.path.join(out_dir, name), "wb") as out:
-                # A part is larger than READ_BLOCK, so keep filling until full.
+                # At the default size a part is a single read (1,000,000 is
+                # under READ_BLOCK), but --size takes anything, so keep
+                # filling until the part is full or the file runs out.
                 while written < chunk:
                     block = fh.read(min(READ_BLOCK, chunk - written))
                     if not block:
@@ -155,6 +166,10 @@ def cmd_split(args) -> int:
 
     parts_root = os.path.abspath(args.parts)
     os.makedirs(parts_root, exist_ok=True)
+    # Splitting one named file (the .exe) drops its parts straight into the
+    # output folder, so runableparts/ is a flat 00000.bin.. list. Splitting a
+    # directory gives each file its own <name>.parts/ subfolder, which is what
+    # lets merge rebuild a tree like models/insightface/models/buffalo_l/.
     flat = len(files) == 1 and os.path.isfile(os.path.abspath(args.src))
 
     entries, n_parts = [], 0
@@ -192,6 +207,8 @@ def load_manifest(parts_root: str) -> dict:
 
 
 def entry_part_dir(parts_root: str, entry: dict) -> str:
+    """Folder holding this file's parts: a <name>.parts/ subfolder, or the parts
+    root itself when a single file was split flat (see the `flat` note above)."""
     sub = entry.get("parts_dir", "")
     return os.path.join(parts_root, sub.replace("/", os.sep)) if sub else parts_root
 
